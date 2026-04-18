@@ -72,6 +72,11 @@ export const agents = sqliteTable(
     model: text("model").$type<Model>().notNull(),
     thinking: text("thinking").$type<ThinkingConfig>().notNull(),
     profile: text("profile").notNull().default("research"),
+    clearance: text("clearance", {
+      enum: ["INTERNAL", "PUBLIC"],
+    })
+      .notNull()
+      .default("INTERNAL"),
   },
   (t) => [unique().on(t.name, t.experiment)],
 );
@@ -163,6 +168,11 @@ export const publications = sqliteTable(
       enum: ["SUBMITTED", "PUBLISHED", "REJECTED"],
     }).notNull(),
     reference: text("reference").notNull(),
+    restriction: text("restriction", {
+      enum: ["INTERNAL", "PUBLIC"],
+    })
+      .notNull()
+      .default("INTERNAL"),
   },
   (t) => {
     return [unique().on(t.experiment, t.reference)];
@@ -180,9 +190,8 @@ export const citations = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date()),
 
-    experiment: integer("experiment")
-      .notNull()
-      .references(() => experiments.id),
+    // Nullable for cross-experiment citations
+    experiment: integer("experiment").references(() => experiments.id),
 
     from: integer("from")
       .notNull()
@@ -191,11 +200,40 @@ export const citations = sqliteTable(
     to: integer("to")
       .notNull()
       .references(() => publications.id),
+
+    // Track source and target experiments for cross-experiment citations
+    from_experiment: integer("from_experiment")
+      .notNull()
+      .references(() => experiments.id),
+    to_experiment: integer("to_experiment")
+      .notNull()
+      .references(() => experiments.id),
   },
   (t) => [
-    unique().on(t.from, t.to, t.experiment),
+    unique().on(t.from, t.to),
     index("citations_idx_from").on(t.from),
     index("citations_idx_to").on(t.to),
+    index("citations_idx_from_experiment").on(t.from_experiment),
+    index("citations_idx_to_experiment").on(t.to_experiment),
+  ],
+);
+
+export const publication_tags = sqliteTable(
+  "publication_tags",
+  {
+    id: integer("id").primaryKey(),
+    created: integer("created", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    publication: integer("publication")
+      .notNull()
+      .references(() => publications.id),
+    tag: text("tag").notNull(), // normalized: lowercase, trimmed
+  },
+  (t) => [
+    unique().on(t.publication, t.tag),
+    index("publication_tags_idx_tag").on(t.tag),
+    index("publication_tags_idx_publication").on(t.publication),
   ],
 );
 

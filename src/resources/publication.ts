@@ -1,5 +1,5 @@
 import { db } from "@app/db";
-import { citations, publications, reviews, solutions } from "@app/db/schema";
+import { citations, publications, reviews, solutions, publication_tags } from "@app/db/schema";
 import {
   eq,
   InferSelectModel,
@@ -10,6 +10,7 @@ import {
   count,
   isNull,
   getTableColumns,
+  sql,
 } from "drizzle-orm";
 import { ExperimentResource } from "./experiment";
 import { Agent, AgentResource } from "./agent";
@@ -20,6 +21,7 @@ import { assertNever } from "@app/lib/assert";
 import assert from "assert";
 import { PLACEHOLDER_AGENT_PROFILE } from "@app/agent_profile";
 import { Advisory } from "@app/runner/advisory";
+import { validateTags, normalizeTag } from "@app/lib/tags";
 
 export type Publication = InferSelectModel<typeof publications>;
 export type Review = Omit<InferInsertModel<typeof reviews>, "author"> & {
@@ -32,12 +34,14 @@ export class PublicationResource {
   private citations: { from: Citation[]; to: Citation[] };
   private reviews: Review[];
   private author: Agent;
+  private tags: string[];
   experiment: ExperimentResource;
 
   private constructor(data: Publication, experiment: ExperimentResource) {
     this.data = data;
     this.citations = { from: [], to: [] };
     this.reviews = [];
+    this.tags = [];
     this.author = {
       id: 0,
       name: "",
@@ -64,10 +68,11 @@ export class PublicationResource {
     const publicationIds = data.map((p) => p.id);
     const resources = data.map((p) => new PublicationResource(p, experiment));
 
-    const [fromCitationsResults, toCitationsResults, reviewsResults] = await Promise.all([
+    const [fromCitationsResults, toCitationsResults, reviewsResults, tagsResults] = await Promise.all([
       db.select().from(citations).where(inArray(citations.from, publicationIds)),
       db.select().from(citations).where(inArray(citations.to, publicationIds)),
       db.select().from(reviews).where(inArray(reviews.publication, publicationIds)),
+      db.select().from(publication_tags).where(inArray(publication_tags.publication, publicationIds)),
     ]);
 
     const agentIds = new Set<number>();
@@ -92,6 +97,7 @@ export class PublicationResource {
     const fromCitationsByPublicationId = new Map<number, Citation[]>();
     const toCitationsByPublicationId = new Map<number, Citation[]>();
     const reviewsByPublicationId = new Map<number, Review[]>();
+    const tagsByPublicationId = new Map<number, string[]>();
 
     for (const citation of fromCitationsResults) {
       const items = fromCitationsByPublicationId.get(citation.from) ?? [];
@@ -113,6 +119,12 @@ export class PublicationResource {
       reviewsByPublicationId.set(review.publication, items);
     }
 
+    for (const tagResult of tagsResults) {
+      const items = tagsByPublicationId.get(tagResult.publication) ?? [];
+      items.push(tagResult.tag);
+      tagsByPublicationId.set(tagResult.publication, items);
+    }
+
     for (const resource of resources) {
       const author = agentsById.get(resource.data.author);
       assert(author);
@@ -120,6 +132,7 @@ export class PublicationResource {
       resource.citations.from = fromCitationsByPublicationId.get(resource.data.id) ?? [];
       resource.citations.to = toCitationsByPublicationId.get(resource.data.id) ?? [];
       resource.reviews = reviewsByPublicationId.get(resource.data.id) ?? [];
+      resource.tags = tagsByPublicationId.get(resource.data.id) ?? [];
     }
 
     return resources;
@@ -301,8 +314,21 @@ export class PublicationResource {
       title: string;
       abstract: string;
       content: string;
+      restriction?: "INTERNAL" | "PUBLIC";
+      tags?: string[];
     },
   ): Promise<Result<PublicationResource>> {
+    // Validate and normalize tags
+    const tags = data.tags ?? [];
+    const { valid: validTags, invalid: invalidTags } = validateTags(tags);
+    
+    if (invalidTags.length > 0) {
+      return err(
+        "invalid_parameters_error",
+        `Invalid tag format: ${invalidTags.join(", ")}. Tags must be alphanumeric with hyphens, 1-50 characters.`,
+      );
+    }
+
     const references = PublicationResource.extractReferences(data.content);
     const found = await PublicationResource.findByReferences(
       experiment,
@@ -325,11 +351,24 @@ export class PublicationResource {
       .values({
         experiment: experiment.toJSON().id,
         author: author.toJSON().id,
-        ...data,
+        title: data.title,
+        abstract: data.abstract,
+        content: data.content,
         reference: newID4(),
         status: "SUBMITTED",
+        restriction: data.restriction ?? "INTERNAL",
       })
       .returning();
+
+    // Insert tags
+    if (validTags.length > 0) {
+      await db.insert(publication_tags).values(
+        validTags.map((tag) => ({
+          publication: created.id,
+          tag,
+        })),
+      );
+    }
 
     // We don't create citations until the publication gets published.
 
@@ -515,6 +554,9 @@ export class PublicationResource {
     // Delete reviews for this publication
     await db.delete(reviews).where(eq(reviews.publication, pubId));
 
+    // Delete tags for this publication
+    await db.delete(publication_tags).where(eq(publication_tags.publication, pubId));
+
     // Nullify solutions that reference this publication
     await db
       .update(solutions)
@@ -525,12 +567,247 @@ export class PublicationResource {
     await db.delete(publications).where(eq(publications.id, pubId));
   }
 
+  /**
+   * Check if an agent can access this publication
+   */
+  async canAccess(agent: AgentResource): Promise<boolean> {
+    // Same experiment: always allowed
+    if (this.data.experiment === agent.toJSON().experiment) {
+      return true;
+    }
+
+    // Different experiment: only if publication is PUBLIC and agent has PUBLIC clearance
+    if (this.data.restriction === "PUBLIC" && agent.getClearance() === "PUBLIC") {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Get tags for this publication
+   */
+  getTags(): string[] {
+    return this.tags;
+  }
+
+  /**
+   * Set tags for this publication (replaces existing tags)
+   */
+  async setTags(tags: string[]): Promise<Result<void>> {
+    const { valid: validTags, invalid: invalidTags } = validateTags(tags);
+
+    if (invalidTags.length > 0) {
+      return err(
+        "invalid_parameters_error",
+        `Invalid tag format: ${invalidTags.join(", ")}. Tags must be alphanumeric with hyphens, 1-50 characters.`,
+      );
+    }
+
+    try {
+      // Delete existing tags
+      await db.delete(publication_tags).where(eq(publication_tags.publication, this.data.id));
+
+      // Insert new tags
+      if (validTags.length > 0) {
+        await db.insert(publication_tags).values(
+          validTags.map((tag) => ({
+            publication: this.data.id,
+            tag,
+          })),
+        );
+      }
+
+      this.tags = validTags;
+      return ok(undefined);
+    } catch (error) {
+      return err("resource_update_error", "Failed to update tags", error);
+    }
+  }
+
+  /**
+   * List publications accessible by an agent with filtering
+   */
+  static async listAccessibleByAgent(
+    agent: AgentResource,
+    options: {
+      experiments?: number[];
+      tags?: string[];
+      restriction?: "INTERNAL" | "PUBLIC";
+      order: "latest" | "citations";
+      limit: number;
+      offset: number;
+    },
+  ): Promise<PublicationResource[]> {
+    const { experiments: experimentIds, tags, restriction, order, limit, offset } = options;
+    const agentClearance = agent.getClearance();
+    const agentExperiment = agent.toJSON().experiment;
+
+    // Build base query
+    let query = db
+      .select({
+        ...getTableColumns(publications),
+        citationsCount: count(citations.id),
+      })
+      .from(publications)
+      .leftJoin(citations, eq(citations.to, publications.id))
+      .where(
+        and(
+          // Authorization filter
+          agentClearance === "PUBLIC"
+            ? sql`(${publications.experiment} = ${agentExperiment} OR ${publications.restriction} = 'PUBLIC')`
+            : eq(publications.experiment, agentExperiment),
+          // Status filter (only published)
+          eq(publications.status, "PUBLISHED"),
+          // Restriction filter (if specified)
+          restriction ? eq(publications.restriction, restriction) : undefined,
+          // Experiment filter (if specified)
+          experimentIds && experimentIds.length > 0
+            ? inArray(publications.experiment, experimentIds)
+            : undefined,
+        ),
+      )
+      .groupBy(publications.id);
+
+    // Add ordering
+    if (order === "latest") {
+      query = query.orderBy(desc(publications.created)) as any;
+    } else {
+      query = query.orderBy(desc(count(citations.id))) as any;
+    }
+
+    // Execute query
+    let results = await query;
+
+    // Filter by tags if specified (post-query filtering for simplicity)
+    if (tags && tags.length > 0) {
+      const normalizedTags = tags.map(normalizeTag);
+      const publicationIds = results.map((r: any) => r.id);
+
+      if (publicationIds.length > 0) {
+        const tagResults = await db
+          .select({
+            publication: publication_tags.publication,
+            tags: sql<string>`GROUP_CONCAT(${publication_tags.tag})`,
+          })
+          .from(publication_tags)
+          .where(inArray(publication_tags.publication, publicationIds))
+          .groupBy(publication_tags.publication);
+
+        const pubsWithAllTags = new Set<number>();
+        for (const tagResult of tagResults) {
+          const pubTags = tagResult.tags.split(",");
+          if (normalizedTags.every((tag) => pubTags.includes(tag))) {
+            pubsWithAllTags.add(tagResult.publication);
+          }
+        }
+
+        results = results.filter((r: any) => pubsWithAllTags.has(r.id));
+      }
+    }
+
+    // Apply pagination
+    results = results.slice(offset, offset + limit);
+
+    // Get experiment resources for finalization
+    const experimentIdsSet = new Set(results.map((r: any) => r.experiment));
+    const experiments = await Promise.all(
+      Array.from(experimentIdsSet).map(async (id) => {
+        const exp = await ExperimentResource.findById(id);
+        return exp.isOk() ? exp.value : null;
+      }),
+    );
+    const experimentsById = new Map(
+      experiments.filter((e) => e !== null).map((e) => [e!.toJSON().id, e!]),
+    );
+
+    // Finalize publications grouped by experiment
+    const publicationsByExperiment = new Map<number, any[]>();
+    for (const result of results) {
+      const expId = (result as any).experiment;
+      const pubs = publicationsByExperiment.get(expId) ?? [];
+      pubs.push(result);
+      publicationsByExperiment.set(expId, pubs);
+    }
+
+    const allPublications: PublicationResource[] = [];
+    for (const [expId, pubs] of publicationsByExperiment.entries()) {
+      const experiment = experimentsById.get(expId);
+      if (experiment) {
+        const finalized = await PublicationResource.finalizeMany(experiment, pubs as Publication[]);
+        allPublications.push(...finalized);
+      }
+    }
+
+    return allPublications;
+  }
+
+  /**
+   * Find publications by tag
+   */
+  static async findByTag(
+    tag: string,
+    agent: AgentResource,
+    options: { limit: number; offset: number },
+  ): Promise<PublicationResource[]> {
+    return PublicationResource.listAccessibleByAgent(agent, {
+      tags: [tag],
+      order: "latest",
+      ...options,
+    });
+  }
+
+  /**
+   * Get popular tags accessible by agent
+   */
+  static async getPopularTags(
+    agent: AgentResource,
+    limit: number,
+  ): Promise<Array<{ tag: string; count: number }>> {
+    const agentClearance = agent.getClearance();
+    const agentExperiment = agent.toJSON().experiment;
+
+    // Get all accessible publications
+    const accessiblePubs = await db
+      .select({ id: publications.id })
+      .from(publications)
+      .where(
+        and(
+          agentClearance === "PUBLIC"
+            ? sql`(${publications.experiment} = ${agentExperiment} OR ${publications.restriction} = 'PUBLIC')`
+            : eq(publications.experiment, agentExperiment),
+          eq(publications.status, "PUBLISHED"),
+        ),
+      );
+
+    if (accessiblePubs.length === 0) {
+      return [];
+    }
+
+    const pubIds = accessiblePubs.map((p) => p.id);
+
+    // Get tag counts
+    const tagCounts = await db
+      .select({
+        tag: publication_tags.tag,
+        count: count(publication_tags.id),
+      })
+      .from(publication_tags)
+      .where(inArray(publication_tags.publication, pubIds))
+      .groupBy(publication_tags.tag)
+      .orderBy(desc(count(publication_tags.id)))
+      .limit(limit);
+
+    return tagCounts.map((tc) => ({ tag: tc.tag, count: tc.count }));
+  }
+
   toJSON() {
     return {
       ...this.data,
       citations: this.citations,
       reviews: this.reviews,
       author: this.author,
+      tags: this.tags,
     };
   }
 }

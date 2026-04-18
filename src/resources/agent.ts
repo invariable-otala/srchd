@@ -226,6 +226,37 @@ export class AgentResource {
     }
   }
 
+  /**
+   * Get agent clearance level
+   */
+  getClearance(): "INTERNAL" | "PUBLIC" {
+    return this.data.clearance as "INTERNAL" | "PUBLIC";
+  }
+
+  /**
+   * Set agent clearance level
+   */
+  async setClearance(
+    clearance: "INTERNAL" | "PUBLIC",
+  ): Promise<Result<AgentResource>> {
+    try {
+      const [updated] = await db
+        .update(agents)
+        .set({ clearance, updated: new Date() })
+        .where(eq(agents.id, this.data.id))
+        .returning();
+
+      this.data = updated;
+      return ok(this);
+    } catch (error) {
+      return err(
+        "resource_update_error",
+        "Failed to update agent clearance",
+        error,
+      );
+    }
+  }
+
   toJSON(): Agent {
     assert(this.lastEvolution);
     return {

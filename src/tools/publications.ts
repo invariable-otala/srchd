@@ -9,6 +9,7 @@ import { PUBLICATIONS_SERVER_NAME as SERVER_NAME } from "@app/tools/constants";
 import { RunConfig } from "@app/runner/config";
 import { copyFromComputer, copyToComputer } from "@app/computer/k8s";
 import { computerId } from "@app/computer";
+import { formatTags } from "@app/lib/tags";
 import fs from "fs";
 import path from "path";
 
@@ -39,25 +40,25 @@ export const publicationHeader = (
 ) => {
   const experimentId = publication.toJSON().experiment;
   const reference = publication.toJSON().reference;
+  const pubData = publication.toJSON();
 
   const attachmentsDir = getAttachmentPath(experimentId, reference);
   const attachments = fs.existsSync(attachmentsDir) ? fs.readdirSync(attachmentsDir) : [];
 
   return (
     `\
-reference=[${publication.toJSON().reference}]
-title=${publication.toJSON().title}
-author=${publication.toJSON().author.name}
-reviews:${publication
-      .toJSON()
-      .reviews.map((r) => `${r.grade ?? "PENDING"}`)
-      .join(", ")}
-status=${publication.toJSON().status}
-citations_count=${publication.toJSON().citations.to.length}
-attachments=[${attachments.join(",") + "]" +
+reference=[${pubData.reference}]
+title=${pubData.title}
+author=${pubData.author.name}
+restriction=${pubData.restriction}
+tags=${formatTags(pubData.tags)}
+reviews:${pubData.reviews.map((r) => `${r.grade ?? "PENDING"}`).join(", ")}
+status=${pubData.status}
+citations_count=${pubData.citations.to.length}
+attachments=[${attachments.join(",")}]` +
     (withAbstract
-      ? `\nabstract = ${publication.toJSON().abstract.replace("\n", " ")}`
-      : "")}`
+      ? `\nabstract=${pubData.abstract.replace(/\n/g, " ")}`
+      : "")
   );
 };
 
@@ -93,7 +94,7 @@ export async function createPublicationsServer(
 
   server.tool(
     "list_publications",
-    "List publications available in the system.",
+    "List publications available to you based on your clearance level. You can access publications from your experiment, and if you have PUBLIC clearance, you can also access PUBLIC publications from other experiments.",
     {
       order: z
         .enum(["latest", "citations"])
@@ -104,12 +105,6 @@ Ordering to use:
 \`latest\` lists the most recent publications.
 \`citations\` lists the most cited publications.
 Defaults to \`latest\`.`,
-        ),
-      status: z
-        .enum(["PUBLISHED", "SUBMITTED", "REJECTED"])
-        .optional()
-        .describe(
-          `The status of the publications to list. Defaults to \`PUBLISHED\``,
         ),
       withAbstract: z
         .boolean()
@@ -125,19 +120,33 @@ Defaults to \`latest\`.`,
         .number()
         .optional()
         .describe("Offset for pagination. Defaults to 0."),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Filter by tags (AND logic - publication must have all specified tags). Example: ['cryptography', 'rsa']",
+        ),
+      restriction: z
+        .enum(["INTERNAL", "PUBLIC"])
+        .optional()
+        .describe(
+          "Filter by restriction level. INTERNAL publications are only visible within your experiment. PUBLIC publications can be seen across experiments by agents with PUBLIC clearance.",
+        ),
     },
     async ({
       order = "latest",
-      status = "PUBLISHED",
       withAbstract = true,
       limit = 10,
       offset = 0,
+      tags,
+      restriction,
     }) => {
-      const publications = await PublicationResource.listPublishedByExperiment(
-        experiment,
+      const publications = await PublicationResource.listAccessibleByAgent(
+        agent,
         {
+          tags,
+          restriction,
           order,
-          status,
           limit,
           offset,
         },
@@ -159,7 +168,7 @@ Defaults to \`latest\`.`,
 
   server.tool(
     "get_publication",
-    "Retrieve a specific publication.",
+    "Retrieve a specific publication if you have access to it. You can access publications from your experiment, and if you have PUBLIC clearance, you can also access PUBLIC publications from other experiments.",
     {
       reference: z.string().describe("Reference of the publication."),
     },
@@ -174,6 +183,17 @@ Defaults to \`latest\`.`,
         );
       }
       const publication = publicationRes.value;
+
+      // Check authorization
+      const canAccess = await publication.canAccess(agent);
+      if (!canAccess) {
+        return errorToCallToolResult(
+          err(
+            "publication_error",
+            `You do not have access to publication [${reference}]. It may be INTERNAL to another experiment, or you may need PUBLIC clearance.`,
+          ),
+        );
+      }
 
       return {
         isError: false,
@@ -205,7 +225,7 @@ ${r.content}`;
 
   server.tool(
     "submit_publication",
-    "Submit a new publication for review and publication.",
+    "Submit a new publication for review and publication. You can set the restriction level (INTERNAL or PUBLIC) and add thematic tags for categorization.",
     {
       title: z.string().describe("Title of the publication."),
       abstract: z
@@ -216,6 +236,18 @@ ${r.content}`;
         .describe(
           "Full content of the publication. Use [{ref}] or [{ref},{ref}] inlined in content for citations.",
         ),
+      restriction: z
+        .enum(["INTERNAL", "PUBLIC"])
+        .optional()
+        .describe(
+          "Access restriction level. INTERNAL (default): only visible within your experiment. PUBLIC: visible to agents with PUBLIC clearance across experiments.",
+        ),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Thematic tags for categorization (e.g., ['cryptography', 'machine-learning']). Tags must be alphanumeric with hyphens, 1-50 characters.",
+        ),
       ...(hasComputerTool ? {
         attachments: z
           .array(z.string())
@@ -224,7 +256,7 @@ ${r.content}`;
             "Optional paths to files in your computer to attach to the publication.",
           ) } : {}),
     },
-    async ({ title, abstract, content, attachments }) => {
+    async ({ title, abstract, content, restriction, tags, attachments }) => {
       const pendingReviews =
         await PublicationResource.listByExperimentAndReviewRequested(
           experiment,
@@ -254,6 +286,8 @@ ${r.content}`;
         title,
         abstract,
         content,
+        restriction,
+        tags,
       });
       if (publication.isErr()) {
         return errorToCallToolResult(publication);
@@ -447,6 +481,95 @@ ${r.content}`;
           {
             type: "text",
             text: `Review submitted for publication [${reference}].`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "list_tags",
+    "List popular tags from publications you can access. Useful for discovering topics and filtering publications.",
+    {
+      limit: z
+        .number()
+        .optional()
+        .describe("Maximum number of tags to return. Defaults to 20."),
+    },
+    async ({ limit = 20 }) => {
+      const tags = await PublicationResource.getPopularTags(agent, limit);
+
+      if (tags.length === 0) {
+        return {
+          isError: false,
+          content: [
+            {
+              type: "text",
+              text: "(No tags found)",
+            },
+          ],
+        };
+      }
+
+      const tagList = tags
+        .map((t) => `#${t.tag} (${t.count} publication${t.count > 1 ? "s" : ""})`)
+        .join("\n");
+
+      return {
+        isError: false,
+        content: [
+          {
+            type: "text",
+            text: `Popular tags:\n${tagList}`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "search_publications_by_tag",
+    "Search publications by tag across accessible experiments. You can search for multiple tags (AND logic - publication must have all tags).",
+    {
+      tags: z
+        .array(z.string())
+        .describe(
+          "Tags to search for (AND logic). Example: ['cryptography', 'rsa']",
+        ),
+      limit: z
+        .number()
+        .optional()
+        .describe("Maximum number of publications to return. Defaults to 10."),
+      offset: z
+        .number()
+        .optional()
+        .describe("Offset for pagination. Defaults to 0."),
+    },
+    async ({ tags, limit = 10, offset = 0 }) => {
+      if (!tags || tags.length === 0) {
+        return errorToCallToolResult(
+          err("invalid_parameters_error", "At least one tag must be specified"),
+        );
+      }
+
+      const publications = await PublicationResource.listAccessibleByAgent(
+        agent,
+        {
+          tags,
+          order: "latest",
+          limit,
+          offset,
+        },
+      );
+
+      return {
+        isError: false,
+        content: [
+          {
+            type: "text",
+            text: renderListOfPublications(publications, {
+              withAbstract: true,
+            }),
           },
         ],
       };

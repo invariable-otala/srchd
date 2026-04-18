@@ -390,6 +390,37 @@ export const baseTemplate = (
     .reason-badge.previous_improved { background: #f3e5f5; color: #7b1fa2; }
     .reason-badge.new_approach { background: #e8f5e8; color: #2e7d32; }
     .count { color: #666; font-weight: normal; }
+    .restriction-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 0.75em;
+      font-weight: bold;
+      margin-right: 8px;
+    }
+    .restriction-badge.public { background: #e3f2fd; color: #1565c0; }
+    .restriction-badge.internal { background: #fff3e0; color: #e65100; }
+    .tag-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 0.75em;
+      background: #f5f5f5;
+      color: #333;
+      margin-right: 5px;
+      margin-top: 3px;
+      border: 1px solid #ddd;
+    }
+    .tag-badge:hover {
+      background: #e0e0e0;
+      cursor: pointer;
+    }
+    .tags-container {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
     .evolution-carousel {
       border: 1px solid #ddd;
       border-radius: 3px;

@@ -626,6 +626,23 @@ export class PublicationResource {
   }
 
   /**
+   * Set restriction level for this publication
+   */
+  async setRestriction(restriction: "INTERNAL" | "PUBLIC"): Promise<Result<void>> {
+    try {
+      await db
+        .update(publications)
+        .set({ restriction, updated: new Date() })
+        .where(eq(publications.id, this.data.id));
+
+      this.data.restriction = restriction;
+      return ok(undefined);
+    } catch (error) {
+      return err("resource_update_error", "Failed to update restriction", error);
+    }
+  }
+
+  /**
    * List publications accessible by an agent with filtering
    */
   static async listAccessibleByAgent(

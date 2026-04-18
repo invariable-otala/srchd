@@ -321,6 +321,12 @@ export const agentOverview = async (c: Input) => {
       .map((pub) => {
         const pubData = pub.toJSON();
         const statusClass = safeStatusClass(pubData.status);
+        const restrictionBadge = pubData.restriction === "PUBLIC"
+          ? '<span class="restriction-badge public">🌐 PUBLIC</span>'
+          : '<span class="restriction-badge internal">🔒 INTERNAL</span>';
+        const tagBadges = pubData.tags.length > 0
+          ? pubData.tags.map(tag => `<span class="tag-badge">#${sanitizeText(tag)}</span>`).join(" ")
+          : "";
         return `
         <div class="card">
           <h3><a href="/experiments/${id}/publications/${pubData.id}">${sanitizeText(
@@ -331,8 +337,10 @@ export const agentOverview = async (c: Input) => {
             <span class="status ${statusClass}">${sanitizeText(
               pubData.status,
             )}</span> |
+            ${restrictionBadge} |
             Reference: ${sanitizeText(pubData.reference)}
           </div>
+          ${tagBadges ? `<div class="tags-container">${tagBadges}</div>` : ""}
         </div>
       `;
       })
@@ -428,6 +436,12 @@ export const publicationList = async (c: Input) => {
       .map((pub) => {
         const pubData = pub.toJSON();
         const statusClass = safeStatusClass(pubData.status);
+        const restrictionBadge = pubData.restriction === "PUBLIC"
+          ? '<span class="restriction-badge public">🌐 PUBLIC</span>'
+          : '<span class="restriction-badge internal">🔒 INTERNAL</span>';
+        const tagBadges = pubData.tags.length > 0
+          ? pubData.tags.map(tag => `<span class="tag-badge">#${sanitizeText(tag)}</span>`).join(" ")
+          : "";
         return `
         <div class="card">
           <h3><a href="/experiments/${id}/publications/${pubData.id}">${sanitizeText(
@@ -439,6 +453,7 @@ export const publicationList = async (c: Input) => {
             <span class="status ${statusClass}">${sanitizeText(
               pubData.status,
             )}</span> |
+            ${restrictionBadge} |
             Author: ${sanitizeText(pubData.author.name)} |
             Created: ${sanitizeText(pubData.created.toLocaleString())} |
             Citations: ${pubData.citations.to.length} |
@@ -454,6 +469,7 @@ export const publicationList = async (c: Input) => {
                 .join("") || "No reviews yet"
             }
           </div>
+          ${tagBadges ? `<div class="tags-container">${tagBadges}</div>` : ""}
         </div>
       `;
       })
@@ -517,8 +533,18 @@ export const publicationDetail = async (c: Input) => {
     <div class="card">
       <p><strong>Author:</strong> ${publicationAuthor}</p>
       <p><strong>Status:</strong> <span class="status ${publicationStatusClass}">${publicationStatus}</span></p>
+      <p><strong>Restriction:</strong> ${
+        pubData.restriction === "PUBLIC"
+          ? '<span class="restriction-badge public">🌐 PUBLIC</span>'
+          : '<span class="restriction-badge internal">🔒 INTERNAL</span>'
+      }</p>
       <p><strong>Reference:</strong> ${publicationReference}</p>
       <div class="abstract"><strong>Abstract:</strong> ${publicationAbstract}</div>
+      ${
+        pubData.tags.length > 0
+          ? `<p><strong>Tags:</strong> ${pubData.tags.map(tag => `<span class="tag-badge">#${sanitizeText(tag)}</span>`).join(" ")}</p>`
+          : ""
+      }
       <div class="meta">Created: ${publicationCreated}</div>
     </div>
     <div class="card">

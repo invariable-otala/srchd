@@ -5,6 +5,7 @@ import { problemPathFromInput } from "./lib/problem";
 import { Err, err, ok, Result, SrchdError } from "./lib/error";
 import { ExperimentResource } from "./resources/experiment";
 import { AgentResource } from "./resources/agent";
+import { PublicationResource } from "./resources/publication";
 import { Runner } from "./runner";
 import { newID4, removeNulls } from "./lib/utils";
 import { isThinkingConfig } from "./models";
@@ -462,6 +463,36 @@ agentCmd
   });
 
 agentCmd
+  .command("set-clearance <name> <clearance>")
+  .description("Set agent clearance level (INTERNAL or PUBLIC)")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .action(async (name, clearance, options) => {
+    const res = await experimentAndAgents({
+      experiment: options.experiment,
+      agent: name,
+    });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [_experiment, [agent]] = res.value;
+
+    const upperClearance = clearance.toUpperCase();
+    if (upperClearance !== "INTERNAL" && upperClearance !== "PUBLIC") {
+      return exitWithError(
+        err(
+          "invalid_parameters_error",
+          `Clearance must be 'INTERNAL' or 'PUBLIC', got '${clearance}'`,
+        ),
+      );
+    }
+
+    await agent.setClearance(upperClearance as "INTERNAL" | "PUBLIC");
+    console.log(
+      `Agent '${name}' clearance set to ${upperClearance}`,
+    );
+  });
+
+agentCmd
   .command("run <name>")
   .description("Run an agent")
   .requiredOption("-e, --experiment <experiment>", "Experiment name")
@@ -731,6 +762,253 @@ experimentCmd
         if (deleteVolumes) console.log(`  Volume deleted successfully`);
       }
     }, { concurrency: 10 });
+  });
+
+// Publication commands
+const publicationCmd = program
+  .command("publication")
+  .description("Manage publications");
+
+publicationCmd
+  .command("list")
+  .description("List publications for an experiment")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .option("-l, --limit <limit>", "Maximum number of publications to show", "50")
+  .action(async (options) => {
+    const res = await experimentAndAgents({ experiment: options.experiment });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [experiment] = res.value;
+
+    const limit = parseInt(options.limit);
+    const publications = await PublicationResource.listByExperiment(experiment);
+
+    // Apply limit
+    const limitedPubs = publications.slice(0, limit);
+
+    if (limitedPubs.length === 0) {
+      console.log("No publications found.");
+      return;
+    }
+
+    console.table(
+      limitedPubs.map((pub) => {
+        const p = pub.toJSON();
+        return {
+          reference: p.reference,
+          title: p.title.substring(0, 50) + (p.title.length > 50 ? "..." : ""),
+          author: p.author.name,
+          status: p.status,
+          restriction: p.restriction,
+          tags: p.tags.join(", "),
+          created: p.created.toLocaleString(),
+        };
+      }),
+    );
+  });
+
+publicationCmd
+  .command("list-by-tag <tags>")
+  .description("List publications by tag(s) - comma-separated for AND logic")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .option("-a, --agent <agent>", "Agent name (for authorization)", "")
+  .option("-l, --limit <limit>", "Maximum number of publications to show", "20")
+  .action(async (tags, options) => {
+    const res = await experimentAndAgents({
+      experiment: options.experiment,
+      agent: options.agent || undefined,
+    });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [experiment, agents] = res.value;
+
+    // Use first agent from experiment if none specified
+    let agent: AgentResource;
+    if (agents.length > 0) {
+      agent = agents[0];
+    } else {
+      const allAgents = await AgentResource.listByExperiment(experiment);
+      if (allAgents.length === 0) {
+        return exitWithError(
+          err("not_found_error", "No agents found in experiment. Create an agent first."),
+        );
+      }
+      agent = allAgents[0];
+    }
+
+    const tagArray = tags.split(",").map((t: string) => t.trim());
+    const limit = parseInt(options.limit);
+
+    const publications = await PublicationResource.listAccessibleByAgent(agent, {
+      tags: tagArray,
+      order: "latest",
+      limit,
+      offset: 0,
+    });
+
+    if (publications.length === 0) {
+      console.log(`No publications found with tags: ${tagArray.join(", ")}`);
+      return;
+    }
+
+    console.table(
+      publications.map((pub) => {
+        const p = pub.toJSON();
+        return {
+          reference: p.reference,
+          title: p.title.substring(0, 50) + (p.title.length > 50 ? "..." : ""),
+          author: p.author.name,
+          status: p.status,
+          restriction: p.restriction,
+          tags: p.tags.join(", "),
+          created: p.created.toLocaleString(),
+        };
+      }),
+    );
+  });
+
+publicationCmd
+  .command("set-restriction <reference> <restriction>")
+  .description("Set publication restriction level (INTERNAL or PUBLIC)")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .action(async (reference, restriction, options) => {
+    const res = await experimentAndAgents({ experiment: options.experiment });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [experiment] = res.value;
+
+    const upperRestriction = restriction.toUpperCase();
+    if (upperRestriction !== "INTERNAL" && upperRestriction !== "PUBLIC") {
+      return exitWithError(
+        err(
+          "invalid_parameters_error",
+          `Restriction must be 'INTERNAL' or 'PUBLIC', got '${restriction}'`,
+        ),
+      );
+    }
+
+    const pubRes = await PublicationResource.findByReference(experiment, reference);
+    if (pubRes.isErr()) {
+      return exitWithError(pubRes);
+    }
+    const publication = pubRes.value;
+
+    const setRes = await publication.setRestriction(upperRestriction as "INTERNAL" | "PUBLIC");
+    if (setRes.isErr()) {
+      return exitWithError(setRes);
+    }
+    console.log(
+      `Publication '${reference}' restriction set to ${upperRestriction}`,
+    );
+  });
+
+publicationCmd
+  .command("add-tags <reference> <tags>")
+  .description("Add tags to a publication (comma-separated)")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .action(async (reference, tags, options) => {
+    const res = await experimentAndAgents({ experiment: options.experiment });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [experiment] = res.value;
+
+    const pubRes = await PublicationResource.findByReference(experiment, reference);
+    if (pubRes.isErr()) {
+      return exitWithError(pubRes);
+    }
+    const publication = pubRes.value;
+
+    const currentTags = publication.getTags();
+    const newTags = tags.split(",").map((t: string) => t.trim());
+    const allTags = [...new Set([...currentTags, ...newTags])];
+
+    const setRes = await publication.setTags(allTags);
+    if (setRes.isErr()) {
+      return exitWithError(setRes);
+    }
+    console.log(
+      `Publication '${reference}' tags updated: ${allTags.join(", ")}`,
+    );
+  });
+
+publicationCmd
+  .command("remove-tags <reference> <tags>")
+  .description("Remove tags from a publication (comma-separated)")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .action(async (reference, tags, options) => {
+    const res = await experimentAndAgents({ experiment: options.experiment });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [experiment] = res.value;
+
+    const pubRes = await PublicationResource.findByReference(experiment, reference);
+    if (pubRes.isErr()) {
+      return exitWithError(pubRes);
+    }
+    const publication = pubRes.value;
+
+    const currentTags = publication.getTags();
+    const tagsToRemove = tags.split(",").map((t: string) => t.trim());
+    const remainingTags = currentTags.filter((t) => !tagsToRemove.includes(t));
+
+    const setRes = await publication.setTags(remainingTags);
+    if (setRes.isErr()) {
+      return exitWithError(setRes);
+    }
+    console.log(
+      `Publication '${reference}' tags updated: ${remainingTags.join(", ")}`,
+    );
+  });
+
+publicationCmd
+  .command("list-tags")
+  .description("List popular tags in an experiment")
+  .requiredOption("-e, --experiment <experiment>", "Experiment name")
+  .option("-a, --agent <agent>", "Agent name (for authorization)", "")
+  .option("-l, --limit <limit>", "Maximum number of tags to show", "20")
+  .action(async (options) => {
+    const res = await experimentAndAgents({
+      experiment: options.experiment,
+      agent: options.agent || undefined,
+    });
+    if (res.isErr()) {
+      return exitWithError(res);
+    }
+    const [experiment, agents] = res.value;
+
+    // Use first agent from experiment if none specified
+    let agent: AgentResource;
+    if (agents.length > 0) {
+      agent = agents[0];
+    } else {
+      const allAgents = await AgentResource.listByExperiment(experiment);
+      if (allAgents.length === 0) {
+        return exitWithError(
+          err("not_found_error", "No agents found in experiment. Create an agent first."),
+        );
+      }
+      agent = allAgents[0];
+    }
+
+    const limit = parseInt(options.limit);
+    const tags = await PublicationResource.getPopularTags(agent, limit);
+
+    if (tags.length === 0) {
+      console.log("No tags found.");
+      return;
+    }
+
+    console.table(
+      tags.map((t) => ({
+        tag: t.tag,
+        count: t.count,
+      })),
+    );
   });
 
 // Computer command

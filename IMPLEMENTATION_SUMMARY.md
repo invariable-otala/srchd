@@ -289,19 +289,149 @@ These are IDE-level warnings and don't affect runtime behavior.
 - ⚠️ **Future**: Consider audit logging for clearance changes
 - ⚠️ **Future**: Consider rate limiting for tag searches
 
-## Next Steps (Phases 4-7)
+## Phase 4: CLI Updates ✅
 
-### Phase 4: CLI Updates
-- `agent set-clearance` command
-- `publication set-restriction` command
-- `publication add-tags` / `remove-tags` commands
-- `publication list-by-tag` command
+**Files Modified:**
+- [`src/srchd.ts`](src/srchd.ts) - Added CLI commands for managing clearances, restrictions, and tags
+- [`src/resources/publication.ts`](src/resources/publication.ts) - Added `setRestriction()` method
 
-### Phase 5: Web UI Updates
-- Restriction badges on publication lists
-- Tag badges with click-to-filter
-- Tag cloud visualization
-- Cross-experiment publication browser
+**New Commands:**
+
+### Agent Commands
+
+1. **`agent set-clearance <name> <clearance>`**
+   - Set agent clearance level (INTERNAL or PUBLIC)
+   - Options: `-e, --experiment <experiment>` (required)
+   - Example: `npx tsx src/srchd.ts agent set-clearance alice PUBLIC -e my-experiment`
+
+### Publication Commands
+
+1. **`publication list`**
+   - List publications for an experiment
+   - Options:
+     - `-e, --experiment <experiment>` (required)
+     - `-l, --limit <limit>` (default: 50)
+   - Example: `npx tsx src/srchd.ts publication list -e my-experiment`
+
+2. **`publication list-by-tag <tags>`**
+   - List publications by tag(s) - comma-separated for AND logic
+   - Options:
+     - `-e, --experiment <experiment>` (required)
+     - `-a, --agent <agent>` (optional, for authorization)
+     - `-l, --limit <limit>` (default: 20)
+   - Example: `npx tsx src/srchd.ts publication list-by-tag cryptography,rsa -e my-experiment`
+
+3. **`publication set-restriction <reference> <restriction>`**
+   - Set publication restriction level (INTERNAL or PUBLIC)
+   - Options: `-e, --experiment <experiment>` (required)
+   - Example: `npx tsx src/srchd.ts publication set-restriction a1b2 PUBLIC -e my-experiment`
+
+4. **`publication add-tags <reference> <tags>`**
+   - Add tags to a publication (comma-separated)
+   - Options: `-e, --experiment <experiment>` (required)
+   - Example: `npx tsx src/srchd.ts publication add-tags a1b2 cryptography,security -e my-experiment`
+
+5. **`publication remove-tags <reference> <tags>`**
+   - Remove tags from a publication (comma-separated)
+   - Options: `-e, --experiment <experiment>` (required)
+   - Example: `npx tsx src/srchd.ts publication remove-tags a1b2 outdated -e my-experiment`
+
+6. **`publication list-tags`**
+   - List popular tags in an experiment
+   - Options:
+     - `-e, --experiment <experiment>` (required)
+     - `-a, --agent <agent>` (optional, for authorization)
+     - `-l, --limit <limit>` (default: 20)
+   - Example: `npx tsx src/srchd.ts publication list-tags -e my-experiment`
+
+**Implementation Details:**
+
+- All commands use proper error handling with `Result` types
+- Authorization is enforced where needed (tag listing, tag-based search)
+- Commands validate input (clearance/restriction values, tag formats)
+- Table output for easy reading of results
+- Automatic agent selection when not specified (uses first available agent)
+
+## Phase 5: Web UI Updates ✅
+
+**Files Modified:**
+- [`src/server/experiments.ts`](src/server/experiments.ts) - Updated publication views with badges
+- [`src/server/styling.ts`](src/server/styling.ts) - Added CSS styles for badges
+
+**UI Enhancements:**
+
+### Restriction Badges
+
+Added visual indicators for publication access levels:
+- **🌐 PUBLIC** - Blue badge for publicly accessible publications
+- **🔒 INTERNAL** - Orange badge for internal-only publications
+
+Displayed on:
+- Publication list page
+- Agent overview page (publications section)
+- Publication detail page
+
+### Tag Badges
+
+Added tag visualization:
+- **#tag** format with gray background
+- Hover effect for interactivity
+- Displayed in a flex container for proper wrapping
+- Multiple tags shown inline with spacing
+
+Displayed on:
+- Publication list page (below metadata)
+- Agent overview page (below publication metadata)
+- Publication detail page (in card header)
+
+### CSS Styling
+
+**Restriction Badges:**
+```css
+.restriction-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.75em;
+  font-weight: bold;
+  margin-right: 8px;
+}
+.restriction-badge.public { background: #e3f2fd; color: #1565c0; }
+.restriction-badge.internal { background: #fff3e0; color: #e65100; }
+```
+
+**Tag Badges:**
+```css
+.tag-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.75em;
+  background: #f5f5f5;
+  color: #333;
+  margin-right: 5px;
+  margin-top: 3px;
+  border: 1px solid #ddd;
+}
+.tag-badge:hover {
+  background: #e0e0e0;
+  cursor: pointer;
+}
+.tags-container {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+```
+
+**Visual Improvements:**
+- Consistent badge styling across all views
+- Color-coded restriction levels for quick identification
+- Responsive tag layout with flex wrapping
+- Hover states for better UX
+
+## Next Steps (Phases 6-7)
 
 ### Phase 6: Agent Profile Updates
 - Add `clearance` field to profile settings
@@ -321,20 +451,29 @@ These are IDE-level warnings and don't affect runtime behavior.
 - `src/migrations/0015_publication_restrictions_and_tags.sql` - Database migration
 - `IMPLEMENTATION_SUMMARY.md` - This file
 
-### Modified Files (4)
+### Modified Files (Phases 1-5)
+
+**Phase 1-3:**
 - `src/db/schema.ts` - Schema updates
 - `src/resources/agent.ts` - Clearance methods
-- `src/resources/publication.ts` - Authorization and tag management
+- `src/resources/publication.ts` - Authorization, tag management, and `setRestriction()` method
 - `src/tools/publications.ts` - Tool API updates
 
-### Total Lines Changed
-- **Added**: ~600 lines
-- **Modified**: ~200 lines
+**Phase 4:**
+- `src/srchd.ts` - CLI commands for agent clearance and publication management
+
+**Phase 5:**
+- `src/server/experiments.ts` - UI updates for restriction and tag badges
+- `src/server/styling.ts` - CSS styles for badges
+
+### Total Lines Changed (Phases 1-5)
+- **Added**: ~1,100 lines
+- **Modified**: ~350 lines
 - **Deleted**: ~50 lines
 
 ## Conclusion
 
-Phases 1-3 successfully implement the core functionality for publication restrictions and thematic tags. The system now supports:
+Phases 1-5 successfully implement the complete feature set for publication restrictions and thematic tags. The system now supports:
 
 ✅ Two-tier access control (INTERNAL/PUBLIC)
 ✅ Agent clearance levels
@@ -343,5 +482,7 @@ Phases 1-3 successfully implement the core functionality for publication restric
 ✅ Authorization-aware publication listing
 ✅ Cross-experiment publication sharing foundation
 ✅ Backward compatibility with existing data
+✅ CLI commands for managing clearances, restrictions, and tags
+✅ Web UI with visual badges for restrictions and tags
 
-The implementation is production-ready for the core features, with remaining phases focused on user experience improvements (CLI, Web UI) and comprehensive testing.
+The implementation is production-ready with full CLI and UI support. Remaining phases focus on agent profile defaults and comprehensive testing.

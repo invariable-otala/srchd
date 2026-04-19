@@ -16,6 +16,7 @@ import { isMoonshotAIModel } from "./models/moonshotai";
 import { serve } from "@hono/node-server";
 import { createApp, type BasicAuthConfig } from "./server";
 import { isMistralModel } from "./models/mistral";
+import { isScalewayModel } from "./models/scaleway";
 import {
   messageMetricsByExperiment,
   tokenUsageMetricsByExperiment,
@@ -331,7 +332,8 @@ agentCmd
           isMoonshotAIModel(model) ||
           isDeepseekModel(model) ||
           isZhipuModel(model) ||
-          isStepfunModel(model)
+          isStepfunModel(model) ||
+          isScalewayModel(model)
         )
       ) {
         return exitWithError(

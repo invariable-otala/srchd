@@ -8,6 +8,10 @@ import { isOpenAIModel, OpenAIModel, OpenAILLM } from "./openai";
 import { isZhipuModel, ZhipuModel, ZhipuLLM } from "./zhipu";
 import { isStepfunModel, StepfunModel, StepfunLLM } from "./stepfun";
 import { ScalewayModel, isScalewayModel, ScalewayLLM } from "./scaleway";
+import { OllamaModel, isOllamaModel, OllamaLLM } from "./ollama";
+import { LMStudioModel, isLMStudioModel, LMStudioLLM } from "./lmstudio";
+import { VLLMModel, isVLLMModel, VLLMLLM } from "./vllm";
+import { CustomModel, isCustomModel, CustomLLM } from "./custom";
 import { LLM, ModelConfig } from "./index";
 
 export type Model =
@@ -19,7 +23,11 @@ export type Model =
   | DeepseekModel
   | ZhipuModel
   | StepfunModel
-  | ScalewayModel;
+  | ScalewayModel
+  | OllamaModel
+  | LMStudioModel
+  | VLLMModel
+  | CustomModel;
 
 export type provider =
   | "openai"
@@ -30,7 +38,11 @@ export type provider =
   | "mistral"
   | "zhipu"
   | "stepfun"
-  | "scaleway";
+  | "scaleway"
+  | "ollama"
+  | "lmstudio"
+  | "vllm"
+  | "custom";
 
 export function isProvider(str: string): str is provider {
   return [
@@ -43,6 +55,10 @@ export function isProvider(str: string): str is provider {
     "zhipu",
     "stepfun",
     "scaleway",
+    "ollama",
+    "lmstudio",
+    "vllm",
+    "custom",
   ].includes(str);
 }
 
@@ -56,7 +72,11 @@ export function providerFromModel(
     | DeepseekModel
     | ZhipuModel
     | StepfunModel
-    | ScalewayModel,
+    | ScalewayModel
+    | OllamaModel
+    | LMStudioModel
+    | VLLMModel
+    | CustomModel,
 ): provider {
   if (isOpenAIModel(model)) return "openai";
   if (isMoonshotAIModel(model)) return "moonshotai";
@@ -67,6 +87,10 @@ export function providerFromModel(
   if (isZhipuModel(model)) return "zhipu";
   if (isStepfunModel(model)) return "stepfun";
   if (isScalewayModel(model)) return "scaleway";
+  if (isOllamaModel(model)) return "ollama";
+  if (isLMStudioModel(model)) return "lmstudio";
+  if (isVLLMModel(model)) return "vllm";
+  if (isCustomModel(model)) return "custom";
   else assertNever(model);
 }
 
@@ -94,6 +118,14 @@ export function createLLM(model: Model, config?: ModelConfig): LLM {
     return new StepfunLLM(config, model);
   } else if (isScalewayModel(model)) {
     return new ScalewayLLM(config, model);
+  } else if (isOllamaModel(model)) {
+    return new OllamaLLM(config, model);
+  } else if (isLMStudioModel(model)) {
+    return new LMStudioLLM(config, model);
+  } else if (isVLLMModel(model)) {
+    return new VLLMLLM(config, model);
+  } else if (isCustomModel(model)) {
+    return new CustomLLM(config, model);
   } else {
     assertNever(model);
   }

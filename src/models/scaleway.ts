@@ -40,7 +40,7 @@ function normalizeTokenPrices(
 
 // Pricing based on public Scaleway rates (example values)
 const TOKEN_PRICING: Record<ScalewayModel, ScalewayTokenPrices> = {
-  "gpt-oss-120b": normalizeTokenPrices(0.2, 0.6),
+  "gpt-oss-120b": normalizeTokenPrices(0.15, 0.6),
 };
 
 

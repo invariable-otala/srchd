@@ -55,6 +55,6 @@ export class LMStudioLLM extends LocalLLM {
 
   maxTokens(): number {
     // LM Studio models vary, default to 8K
-    return this.config.maxTokens || 8192;
+    return this.config.maxTokens || 20000;
   }
 }

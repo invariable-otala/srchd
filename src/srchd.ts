@@ -45,6 +45,7 @@ import { K8S_NAMESPACE } from "./lib/k8s";
 import { concurrentExecutor } from "./lib/async";
 import { Advisory } from "./runner/advisory"
 import assert from "assert";
+import { isLMStudioModel } from "./models/lmstudio";
 
 async function confirmAction(message: string): Promise<boolean> {
   const rl = readline.createInterface({
@@ -333,7 +334,8 @@ agentCmd
           isDeepseekModel(model) ||
           isZhipuModel(model) ||
           isStepfunModel(model) ||
-          isScalewayModel(model)
+          isScalewayModel(model) ||
+          isLMStudioModel(model)
         )
       ) {
         return exitWithError(

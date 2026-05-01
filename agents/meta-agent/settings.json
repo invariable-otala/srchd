@@ -1,0 +1,5 @@
+{
+  "description": "Dynamic agent profile generation based on problem requirements and capability gaps",
+  "tools": ["web"],
+  "env": []
+}

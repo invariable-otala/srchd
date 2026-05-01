@@ -1,0 +1,6 @@
+{
+  "description": "Deep technical security research focused on vulnerability discovery and exploit development",
+  "tools": ["web", "computer-process"],
+  "env": [],
+  "imageName": "agent-computer:security-research-engineer"
+}

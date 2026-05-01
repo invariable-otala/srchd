@@ -1,0 +1,6 @@
+{
+  "description": "Validation and quality assurance of security research through rigorous reproduction and review",
+  "tools": ["web", "computer-process"],
+  "env": [],
+  "imageName": "agent-computer:security-quality-control"
+}

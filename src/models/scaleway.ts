@@ -1,8 +1,4 @@
 import {
-  ChatCompletionMessageParam,
-  ChatCompletionAssistantMessageParam,
-} from "openai/resources/chat";
-import {
   LLM,
   ModelConfig,
   Message,
@@ -14,13 +10,10 @@ import {
 import OpenAI from "openai";
 import { Result, err, ok } from "@app/lib/error";
 import { assertNever } from "@app/lib/assert";
-import { removeNulls } from "@app/lib/utils";
-import { convertToolChoice } from "./openai";
-import { CompletionUsage } from "openai/resources/completions";
 
-export type ScalewayModel = "gpt-oss-120b";
+export type ScalewayModel = "qwen3.5-397b-a17b";
 export function isScalewayModel(model: string): model is ScalewayModel {
-  return ["gpt-oss-120b"].includes(model);
+  return ["qwen3.5-397b-a17b"].includes(model);
 }
 
 type ScalewayTokenPrices = {
@@ -40,16 +33,40 @@ function normalizeTokenPrices(
 
 // Pricing based on public Scaleway rates (example values)
 const TOKEN_PRICING: Record<ScalewayModel, ScalewayTokenPrices> = {
-  "gpt-oss-120b": normalizeTokenPrices(0.15, 0.6),
+  "qwen3.5-397b-a17b": normalizeTokenPrices(0.6, 3.6),
 };
 
+function convertToolChoice(toolChoice: ToolChoice) {
+  switch (toolChoice) {
+    case "none":
+    case "auto":
+      return toolChoice;
+    case "any":
+      return "required";
+    default:
+      assertNever(toolChoice);
+  }
+}
 
+function convertThinking(thinking: "high" | "low" | "none" | undefined) {
+  switch (thinking) {
+    case "high":
+      return "high";
+    case "low":
+      return "low";
+    case "none":
+    case undefined:
+      return undefined;
+    default:
+      assertNever(thinking);
+  }
+}
 
 export class ScalewayLLM extends LLM {
   private client: OpenAI;
   private model: ScalewayModel;
 
-  constructor(config: ModelConfig, model: ScalewayModel = "gpt-oss-120b") {
+  constructor(config: ModelConfig, model: ScalewayModel = "qwen3.5-397b-a17b") {
     super(config);
     this.client = new OpenAI({
       apiKey: process.env.SCW_API_KEY,
@@ -58,69 +75,73 @@ export class ScalewayLLM extends LLM {
     this.model = model;
   }
 
-  messages(prompt: string, messages: Message[]) {
-    const inputItems: ChatCompletionMessageParam[] = [
-      { role: "system", content: prompt },
-      ...removeNulls(
-        messages
-          .map((msg) => {
-            switch (msg.role) {
-              case "user":
-                return msg.content.map((c) => {
-                  switch (c.type) {
-                    case "text":
-                      return { role: "user" as const, content: c.text };
-                    case "tool_result":
-                      return {
-                        role: "tool" as const,
-                        name: c.toolUseName,
-                        tool_call_id: c.toolUseId,
-                        content: JSON.stringify(c.content),
-                      };
-                    case "thinking":
-                      // Scaleway does not have a dedicated thinking field – embed as text
-                      return {
-                        role: "user" as const,
-                        content: `Thinking: ${c.thinking}`,
-                      };
-                    default:
-                      return undefined;
-                  }
+  messages(messages: Message[]): OpenAI.Chat.ChatCompletionMessageParam[] {
+    const result: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+    
+    for (const msg of messages) {
+      switch (msg.role) {
+        case "user": {
+          for (const content of msg.content) {
+            switch (content.type) {
+              case "text":
+                result.push({
+                  role: "user",
+                  content: content.text,
                 });
-              case "agent":
-                const message: ChatCompletionAssistantMessageParam = {
-                  role: "assistant",
-                  content: null,
-                };
-                msg.content.forEach((c) => {
-                  switch (c.type) {
-                    case "text":
-                      message.content = c.text;
-                      break;
-                    case "thinking":
-                      // Scaleway does not support thinking in assistant messages
-                      break;
-                    case "tool_use":
-                      message.tool_calls = message.tool_calls ?? [];
-                      message.tool_calls.push({
-                        type: "function" as const,
-                        id: c.id,
-                        function: {
-                          name: c.name,
-                          arguments: JSON.stringify(c.input),
-                        },
-                      });
-                      break;
-                  }
+                break;
+              case "tool_result":
+                result.push({
+                  role: "tool",
+                  tool_call_id: content.toolUseId,
+                  content: content.isError
+                    ? JSON.stringify({ error: content.content })
+                    : JSON.stringify(content.content),
                 });
-                return [message];
+                break;
             }
-          })
-          .flat(),
-      ),
-    ];
-
-    return inputItems;
+          }
+          break;
+        }
+        case "agent": {
+          const textContent: string[] = [];
+          const toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
+          
+          for (const content of msg.content) {
+            switch (content.type) {
+              case "text":
+                textContent.push(content.text);
+                break;
+              case "thinking":
+                // Reasoning is handled separately in Scaleway's extended format
+                break;
+              case "tool_use":
+                toolCalls.push({
+                  id: content.id,
+                  type: "function",
+                  function: {
+                    name: content.name,
+                    arguments: JSON.stringify(content.input),
+                  },
+                });
+                break;
+            }
+          }
+          
+          if (textContent.length > 0 || toolCalls.length > 0) {
+            result.push({
+              role: "assistant",
+              content: textContent.join("\n\n") || null,
+              tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+            });
+          }
+          break;
+        }
+        default:
+          assertNever(msg.role);
+      }
+    }
+    
+    return result;
   }
 
   async run(
@@ -130,60 +151,103 @@ export class ScalewayLLM extends LLM {
     tools: Tool[],
   ): Promise<Result<{ message: Message; tokenUsage?: TokenUsage }>> {
     try {
-      const input = this.messages(prompt, messages);
+      const chatMessages = this.messages(messages);
+      
+      // Add system message at the beginning
+      const messagesWithSystem: OpenAI.Chat.ChatCompletionMessageParam[] = [
+        { role: "system", content: prompt },
+        ...chatMessages,
+      ];
+
+      // Scaleway supports reasoning in chat completions
+      const reasoningEffort = convertThinking(this.config.thinking);
 
       const response = await this.client.chat.completions.create({
         model: this.model,
-        messages: input,
-        tool_choice: convertToolChoice(toolChoice),
-        tools: tools.map((tool) => ({
-          type: "function",
+        messages: messagesWithSystem,
+        tools: tools.length > 0 ? tools.map((tool) => ({
+          type: "function" as const,
           function: {
             name: tool.name,
             description: tool.description,
             parameters: tool.inputSchema as any,
           },
-        })),
+        })) : undefined,
+        tool_choice: convertToolChoice(toolChoice),
+        // @ts-ignore - Scaleway extends the API with reasoning support
+        reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
       });
 
-      const message = response.choices[0].message;
-      const textContent = message.content;
-      const toolCalls = message.tool_calls;
-
-      const output = [];
-
-      if (textContent) {
-        output.push({
-          type: "text" as const,
-          text: textContent,
-          provider: null,
-        });
+      const choice = response.choices[0];
+      if (!choice) {
+        return err("model_error", "No response from model", null);
       }
 
-      if (toolCalls) {
-        output.push(
-          ...toolCalls
-            .filter((t) => t.type === "function")
-            .map((toolCall) => {
-              return {
-                type: "tool_use" as const,
-                id: toolCall.id,
-                name: toolCall.function.name,
-                input: JSON.parse(toolCall.function.arguments),
-                provider: null,
-              };
-            }),
-        );
+      const content: Message["content"] = [];
+      
+      // Check for reasoning content (Scaleway extension)
+      // @ts-ignore - Scaleway may include reasoning in the response
+      if (choice.message.reasoning) {
+        content.push({
+          type: "thinking",
+          // @ts-ignore
+          thinking: choice.message.reasoning,
+          provider: {
+            scaleway: {
+              // @ts-ignore
+              reasoning_content: choice.message.reasoning,
+            },
+          },
+        });
+      }
+      
+      // Add text content
+      if (choice.message.content) {
+        content.push({
+          type: "text",
+          text: choice.message.content,
+          provider: {
+            scaleway: {
+              content: choice.message.content,
+            },
+          },
+        });
+      }
+      
+      // Add tool calls
+      if (choice.message.tool_calls) {
+        for (const toolCall of choice.message.tool_calls) {
+          if (toolCall.type === "function") {
+            content.push({
+              type: "tool_use",
+              id: toolCall.id,
+              name: toolCall.function.name,
+              input: JSON.parse(toolCall.function.arguments),
+              provider: {
+                scaleway: {
+                  id: toolCall.id,
+                },
+              },
+            });
+          }
+        }
       }
 
       const tokenUsage = response.usage
-        ? this.tokenUsage(response.usage)
+        ? {
+            total: response.usage.total_tokens,
+            input: response.usage.prompt_tokens,
+            output: response.usage.completion_tokens,
+            cached: 0,
+            // @ts-ignore - Scaleway may include reasoning tokens
+            thinking: response.usage.reasoning_tokens || 0,
+          }
         : undefined;
 
       return ok({
         message: {
           role: "agent",
-          content: output,
+          content,
         },
         tokenUsage,
       });
@@ -192,30 +256,17 @@ export class ScalewayLLM extends LLM {
     }
   }
 
-  private tokenUsage(usage: CompletionUsage): TokenUsage {
-    return {
-      total: usage.total_tokens,
-      input: usage.prompt_tokens,
-      output: usage.completion_tokens,
-      cached: usage.prompt_tokens_details?.cached_tokens ?? 0,
-      thinking: 0,
-    };
-  }
-
   async tokens(
     messages: Message[],
     prompt: string,
     toolChoice: ToolChoice,
     tools: Tool[],
   ): Promise<Result<number>> {
-    // Scaleway doesn't have a token counting API, so we approximate with 4 chars per token
-    try {
-      const input = this.messages(prompt, messages);
-      const approx = JSON.stringify(input).length;
-      return ok(Math.floor(approx / 4));
-    } catch (error) {
-      return err("model_error", "Failed to estimate token count", error);
-    }
+    // Scaleway API doesn't support token counting endpoint
+    // Use rough estimation: 1 token ≈ 4 characters
+    const input = this.messages(messages);
+    const text = JSON.stringify({ prompt, input, tools });
+    return ok(Math.ceil(text.length / 4));
   }
 
   protected costPerTokenUsage(tokenUsage: TokenUsage): number {
@@ -223,8 +274,12 @@ export class ScalewayLLM extends LLM {
     return tokenUsage.input * pricing.input + tokenUsage.output * pricing.output;
   }
 
+  maxInputItems(): number {
+    return 16384;
+  }
+
   maxTokens(): number {
-    // Generic large context size for Scaleway models
+    // Scaleway context size for qwen3.5-397b-a17b
     return 200000;
   }
 }
